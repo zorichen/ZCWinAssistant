@@ -10,10 +10,26 @@ internal sealed class Readings
 {
     public double? Cpu, Memory, CpuTemp, DiskTemp, GpuTemp, GpuLoad;
     public GpuReading[] Gpus = new GpuReading[0];
+    public DiskReading[] Disks = new DiskReading[0];
     public DateTime LoadAt, TemperatureAt;
     public string CpuSensor = "未读取", DiskSensor = "未读取", GpuSensor = "未读取", Error = "正在初始化温度传感器";
     public double TemperatureReadMs;
     public Readings Copy() { return (Readings)MemberwiseClone(); }
+}
+
+internal sealed class DiskReading
+{
+    public string Id, Name, Sensor;
+    public double? Temperature;
+}
+
+internal static class DiskDisplay
+{
+    internal static string Format(double? value) { return value.HasValue?Math.Round(value.Value).ToString("0")+"°C":"—"; }
+    internal static string Details(DiskReading[] disks)
+    {
+        return string.Join(Environment.NewLine,disks.Select((d,i)=>"硬盘"+(i+1)+"："+Format(d.Temperature)+"  "+d.Name+" ["+d.Id+"] / "+d.Sensor));
+    }
 }
 
 internal sealed class GpuReading
@@ -71,6 +87,7 @@ internal sealed class SensorService : IDisposable
             {
                 result.CpuTemp=result.DiskTemp=result.GpuTemp=result.GpuLoad=null;
                 result.Gpus=result.Gpus.Select(g=>new GpuReading { Id=g.Id,Name=g.Name,Kind=g.Kind,Sensor="读数已过期" }).ToArray();
+                result.Disks=result.Disks.Select(d=>new DiskReading { Id=d.Id,Name=d.Name,Sensor="读数已过期" }).ToArray();
                 result.GpuSensor="GPU 读数已过期";
             }
             return result;
@@ -115,6 +132,7 @@ internal sealed class SensorService : IDisposable
                 string cpuName="无可用 CPU 温度传感器",diskName="无可用磁盘温度传感器";
                 List<string> errors=new List<string>();
                 List<GpuReading> gpus=new List<GpuReading>();
+                List<DiskReading> disks=new List<DiskReading>();
                 // LHM enumerates adapters when the GPU groups open. Reopen only those groups,
                 // on the sampling thread, to discover docks connected after program startup.
                 if(Interlocked.Exchange(ref refreshGpu,0)!=0 || DateTime.UtcNow>=nextGpuScan)
@@ -128,6 +146,12 @@ internal sealed class SensorService : IDisposable
                     bool isGpu=GpuSelection.IsGpu(hardware.HardwareType);
                     if(hardware.HardwareType!=HardwareType.Cpu && hardware.HardwareType!=HardwareType.Storage && !isGpu) continue;
                     GpuReading gpu=null;
+                    DiskReading drive=null;
+                    if(hardware.HardwareType==HardwareType.Storage)
+                    {
+                        drive=new DiskReading { Id=hardware.Identifier.ToString(),Name=hardware.Name,Sensor="无可用磁盘温度传感器" };
+                        disks.Add(drive);
+                    }
                     if(isGpu)
                     {
                         gpu=new GpuReading { Id=hardware.Identifier.ToString(),Name=hardware.Name,Kind=hardware.HardwareType.ToString(),Sensor="无可用 GPU 核心温度" };
@@ -158,6 +182,7 @@ internal sealed class SensorService : IDisposable
                             ISensor chosen=candidates.FirstOrDefault(s=>s.Name.Equals("Temperature",StringComparison.OrdinalIgnoreCase))
                                 ?? candidates.FirstOrDefault(s=>s.Name.IndexOf("Composite",StringComparison.OrdinalIgnoreCase)>=0)
                                 ?? candidates.FirstOrDefault();
+                            if(chosen!=null) { drive.Temperature=chosen.Value.Value; drive.Sensor=chosen.Name+" ("+chosen.Identifier+")"; }
                             if(chosen!=null && (!disk.HasValue || chosen.Value.Value>disk.Value)) { disk=chosen.Value.Value; diskName=hardware.Name+" / "+chosen.Name+" ("+chosen.Identifier+")"; }
                         }
                     }
@@ -170,6 +195,8 @@ internal sealed class SensorService : IDisposable
                 lock(gate)
                 {
                     readings.CpuTemp=cpu; readings.DiskTemp=disk; readings.CpuSensor=cpuName; readings.DiskSensor=diskName;
+                    // Stable identities keep the two labels from swapping when temperatures cross.
+                    readings.Disks=disks.OrderBy(d=>d.Id,StringComparer.Ordinal).ToArray();
                     readings.Gpus=gpus.ToArray(); readings.GpuTemp=selected==null?null:selected.Temperature;
                     readings.GpuLoad=selected==null?null:selected.Load;
                     readings.GpuSensor=selected==null?"未检测到支持的 GPU":selected.Name+" / "+selected.Sensor;
@@ -177,7 +204,7 @@ internal sealed class SensorService : IDisposable
                 }
             } while(!stop.WaitOne(temperatureMs));
         }
-        catch(Exception ex) { lock(gate) { readings.Error=ex.ToString(); readings.CpuTemp=readings.DiskTemp=readings.GpuTemp=readings.GpuLoad=null; readings.Gpus=new GpuReading[0]; } }
+        catch(Exception ex) { lock(gate) { readings.Error=ex.ToString(); readings.CpuTemp=readings.DiskTemp=readings.GpuTemp=readings.GpuLoad=null; readings.Gpus=new GpuReading[0]; readings.Disks=new DiskReading[0]; } }
         finally { if(computer!=null) try { computer.Close(); } catch {} }
     }
     public void Dispose()

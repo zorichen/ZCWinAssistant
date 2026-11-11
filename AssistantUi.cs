@@ -74,7 +74,14 @@ internal sealed class MetricCard : SettingsCardBase
     internal MetricCard(string caption) { Caption=caption; }
     protected override void OnPaint(PaintEventArgs e) {
         base.OnPaint(e);
-        using(var name=new Font("Microsoft YaHei UI",10F)) using(var value=new Font("Segoe UI",25F,FontStyle.Bold)) using(var detail=new Font("Microsoft YaHei UI",9F)) {
+        // Use the same worst-case reading for every card so narrow cards keep equal type sizes.
+        float valueSize=25F;
+        using(var reference=new Font("Segoe UI",valueSize,FontStyle.Bold)) {
+            int measured=TextRenderer.MeasureText(e.Graphics,"100°C",reference).Width;
+            int available=Math.Max(1,Width-Ui.Px(this,28));
+            if(measured>available) valueSize*=available/(float)measured;
+        }
+        using(var name=new Font("Microsoft YaHei UI",10F)) using(var value=new Font("Segoe UI",valueSize,FontStyle.Bold)) using(var detail=new Font("Microsoft YaHei UI",9F)) {
             TextRenderer.DrawText(e.Graphics,Caption,name,new Rectangle(Ui.Px(this,16),Ui.Px(this,12),Width-Ui.Px(this,32),Ui.Px(this,22)),Ui.Muted,TextFormatFlags.Left);
             TextRenderer.DrawText(e.Graphics,Value,value,new Rectangle(Ui.Px(this,14),Ui.Px(this,34),Width-Ui.Px(this,28),Ui.Px(this,44)),Ui.Ink,TextFormatFlags.Left);
             TextRenderer.DrawText(e.Graphics,Detail,detail,new Rectangle(Ui.Px(this,16),Ui.Px(this,82),Width-Ui.Px(this,32),Ui.Px(this,22)),Ui.Muted,TextFormatFlags.Left|TextFormatFlags.EndEllipsis);

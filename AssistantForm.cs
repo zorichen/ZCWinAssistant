@@ -14,15 +14,15 @@ internal sealed class AssistantForm : Form
     readonly Settings settings;
     readonly Panel sidebar=new Panel(),viewport=new Panel(),monitor=new Panel(),general=new Panel();
     readonly EnglishInputLock.InputPanel input=new EnglishInputLock.InputPanel();
-    readonly Label brand=Ui.Label("黑皮win助手",13,true),tagline=Ui.Label("让 Windows 更顺手",9),version=Ui.Label("本机工具箱   ·   1.1.1",9),heading=Ui.Label("硬件监控",23,true),description=Ui.Label("",10);
+    readonly Label brand=Ui.Label("黑皮win助手",13,true),tagline=Ui.Label("让 Windows 更顺手",9),version=Ui.Label("本机工具箱   ·   1.1.2",9),heading=Ui.Label("硬件监控",23,true),description=Ui.Label("",10);
     readonly ActionButton[] nav=new ActionButton[3];
-    readonly MetricCard[] metrics={new MetricCard("CPU"),new MetricCard("GPU"),new MetricCard("内存"),new MetricCard("硬盘")};
+    readonly MetricCard[] metrics={new MetricCard("CPU"),new MetricCard("GPU"),new MetricCard("内存"),new MetricCard("硬盘"),new MetricCard("硬盘2")};
     readonly SettingsCard widget=new SettingsCard(),position=new SettingsCard(),sensorCard=new SettingsCard(),startupCard=new SettingsCard(),behavior=new SettingsCard(),about=new SettingsCard();
     readonly ToggleSwitch widgetSwitch=new ToggleSwitch("显示任务栏监控"),startupSwitch=new ToggleSwitch("登录后自动启动");
     readonly TextBox sensorText=new TextBox();
     readonly Timer timer=new Timer();
     readonly Label runtime=Ui.Label("运行中",9);
-    bool updating,ready;
+    bool updating,ready,dualDiskCards;
     int selected;
     internal string InputStatus { get { return input.CurrentStatus; } }
     internal bool InputEnabled { get { return input.LockEnabled; } set { input.LockEnabled=value; } }
@@ -62,7 +62,7 @@ internal sealed class AssistantForm : Form
         startupSwitch.Checked=StartupEnabled(); startupSwitch.CheckedChanged+=SetStartup;
         var hide=new ActionButton("收起到托盘",delegate { Hide(); });
         MakeSetting(behavior,"后台运行","关闭设置窗口后，两项功能继续工作。",hide,116);
-        var aboutTitle=Ui.Label("黑皮win助手",14,true); var aboutText=Ui.Label("版本 1.1.1\n硬件监控与英文输入锁，集中在一个地方。",10); aboutText.ForeColor=Ui.Muted;
+        var aboutTitle=Ui.Label("黑皮win助手",14,true); var aboutText=Ui.Label("版本 1.1.2\n硬件监控与英文输入锁，集中在一个地方。",10); aboutText.ForeColor=Ui.Muted;
         var quit=new ActionButton("退出助手",delegate { if(ExitRequested!=null) ExitRequested(); });
         about.Controls.Add(aboutTitle); about.Controls.Add(aboutText); about.Controls.Add(quit);
         about.Resize+=delegate { double w=about.ClientSize.Width*96.0/about.DeviceDpi; Ui.Put(aboutTitle,about,20,16,w-40,28); Ui.Put(aboutText,about,20,50,w-40,58); Ui.Put(quit,about,20,126,110,32); };
@@ -102,8 +102,10 @@ internal sealed class AssistantForm : Form
         double content=Math.Max(560,w-260);
         viewport.AutoScrollMinSize=new Size(Ui.Px(this,content),Ui.Px(this,selected==0?540:selected==1?460:398));
         Ui.Put(monitor,viewport,0,0,content,540); Ui.Put(input,viewport,0,0,content,460); Ui.Put(general,viewport,0,0,content,398);
-        double cardWidth=(content-36)/4;
-        for(int i=0;i<metrics.Length;i++) Ui.Put(metrics[i],monitor,i*(cardWidth+12),0,cardWidth,116);
+        int cardCount=dualDiskCards?5:4;
+        double cardWidth=(content-(cardCount-1)*12)/cardCount;
+        for(int i=0;i<cardCount;i++) Ui.Put(metrics[i],monitor,i*(cardWidth+12),0,cardWidth,116);
+        metrics[4].Visible=dualDiskCards;
         Ui.Put(widget,monitor,0,134,content,82); Ui.Put(position,monitor,0,226,content,82); Ui.Put(sensorCard,monitor,0,328,content,174); Ui.Put(runtime,monitor,0,504,content,28);
         Ui.Put(startupCard,general,0,0,content,82); Ui.Put(behavior,general,0,94,content,82); Ui.Put(about,general,0,198,content,180);
     }
@@ -111,9 +113,16 @@ internal sealed class AssistantForm : Form
     static string Format(double? v,string unit) { return v.HasValue?Math.Round(v.Value).ToString("0")+unit:"—"; }
     void RefreshReadings() {
         if(!ready) return; var r=sensors.Snapshot();
-        metrics[0].Value=Format(r.Cpu,"%"); metrics[0].Detail="温度  "+Format(r.CpuTemp,"°C"); metrics[1].Value=Format(r.GpuLoad,"%"); metrics[1].Detail="温度  "+Format(r.GpuTemp,"°C"); metrics[2].Value=Format(r.Memory,"%"); metrics[2].Detail="物理内存占用"; metrics[3].Value=Format(r.DiskTemp,"°C"); metrics[3].Detail="最高主温度";
+        metrics[0].Value=Format(r.Cpu,"%"); metrics[0].Detail="温度  "+Format(r.CpuTemp,"°C"); metrics[1].Value=Format(r.GpuLoad,"%"); metrics[1].Detail="温度  "+Format(r.GpuTemp,"°C"); metrics[2].Value=Format(r.Memory,"%"); metrics[2].Detail="物理内存占用";
+        bool dual=r.Disks.Length>=2;
+        if(dualDiskCards!=dual) { dualDiskCards=dual; LayoutShell(); }
+        metrics[3].Caption=dual?"硬盘1":"硬盘";
+        metrics[3].Value=r.Disks.Length>0?DiskDisplay.Format(r.Disks[0].Temperature):"—";
+        metrics[3].Detail=r.Disks.Length>0?r.Disks[0].Name:"主温度";
+        metrics[4].Value=dual?DiskDisplay.Format(r.Disks[1].Temperature):"—";
+        metrics[4].Detail=dual?r.Disks[1].Name:"主温度";
         foreach(var metric in metrics) metric.Invalidate();
-        sensorText.Text=r.CpuSensor+Environment.NewLine+r.DiskSensor+Environment.NewLine+string.Join(Environment.NewLine,r.Gpus.Select(g=>g.Name+"   "+Format(g.Load,"%")+" / "+Format(g.Temperature,"°C")))+(string.IsNullOrEmpty(r.Error)?"":Environment.NewLine+r.Error);
+        sensorText.Text=r.CpuSensor+Environment.NewLine+DiskDisplay.Details(r.Disks)+Environment.NewLine+string.Join(Environment.NewLine,r.Gpus.Select(g=>g.Name+"   "+Format(g.Load,"%")+" / "+Format(g.Temperature,"°C")))+(string.IsNullOrEmpty(r.Error)?"":Environment.NewLine+r.Error);
         using(var p=Process.GetCurrentProcess()) runtime.Text="正在运行  ·  内存 "+(p.WorkingSet64/1048576.0).ToString("F0")+" MB";
     }
     internal void ShowMain(int page) { updating=true; startupSwitch.Checked=StartupEnabled(); widgetSwitch.Checked=settings.WidgetVisible; updating=false; if(page>=0) SelectPage(page); Show(); WindowState=FormWindowState.Normal; BringToFront(); Activate(); }

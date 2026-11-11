@@ -135,7 +135,7 @@ internal sealed class MonitorContext : ApplicationContext
             if(++runtimeTicks%5==0) {
                 try {
                     var r=sensors.Snapshot();
-                    var record=new { TimeUtc=DateTime.UtcNow.ToString("o"), ProcessId=Process.GetCurrentProcess().Id, IsAdmin=Program.Admin, r.Cpu,r.CpuTemp,r.GpuLoad,r.GpuTemp,r.Memory,r.DiskTemp,r.CpuSensor,r.DiskSensor,r.Error,InputStatus=assistant.InputStatus,InputEnabled=assistant.InputEnabled,InputFile=EnglishInputLock.Store.FileName,WidgetVisible=settings.WidgetVisible,SettingsVisible=assistant.Visible,ShowError=showError,ShowRequestsHandled=showCount };
+                    var record=new { TimeUtc=DateTime.UtcNow.ToString("o"), ProcessId=Process.GetCurrentProcess().Id, IsAdmin=Program.Admin, r.Cpu,r.CpuTemp,r.GpuLoad,r.GpuTemp,r.Memory,r.DiskTemp,r.Disks,r.CpuSensor,r.DiskSensor,r.Error,InputStatus=assistant.InputStatus,InputEnabled=assistant.InputEnabled,InputFile=EnglishInputLock.Store.FileName,WidgetVisible=settings.WidgetVisible,SettingsVisible=assistant.Visible,ShowError=showError,ShowRequestsHandled=showCount };
                     File.WriteAllText(Path.Combine(runtimeRoot,"assistant-runtime.json"),new JavaScriptSerializer().Serialize(record));
                 } catch(Exception ex) { try { File.WriteAllText(Path.Combine(runtimeRoot,"assistant-runtime-error.txt"),ex.ToString()); } catch {} }
             }
@@ -175,6 +175,8 @@ internal sealed class MonitorForm : Form
     private Color labelColor,valueColor;
     private string[] values={"—","—","—","—"};
     private int columns=2;
+    private bool dualDisk;
+    private string[] labels={"CPU","内存","CPU","硬盘"};
     private IntPtr taskbar;
     private float scale=1;
     private bool light,closing;
@@ -342,7 +344,7 @@ internal sealed class MonitorForm : Form
             placed=desired;
         }
     }
-    private int WidgetWidth { get { return columns==3?252:168; } }
+    private int WidgetWidth { get { return dualDisk?(columns-1)*84+104:columns*84; } }
     internal void RefreshPlacement() { Place(); }
     private static string Format(double? value,string unit) { return value.HasValue?Math.Round(value.Value).ToString("0")+unit:"—"; }
     private void Tick()
@@ -352,31 +354,45 @@ internal sealed class MonitorForm : Form
         if(++ticks%30==0) { LocateWeather(); UpdateTheme(false); SaveStatus(); }
         Readings reading=sensors.Snapshot();
         bool hasGpu=reading.Gpus.Length>0;
-        string[] next=hasGpu
-            ? new [] {Format(reading.Cpu,"%"),Format(reading.GpuLoad,"%"),Format(reading.Memory,"%"),Format(reading.CpuTemp,"°C"),Format(reading.GpuTemp,"°C"),Format(reading.DiskTemp,"°C")}
-            : new [] {Format(reading.Cpu,"%"),Format(reading.Memory,"%"),Format(reading.CpuTemp,"°C"),Format(reading.DiskTemp,"°C")};
-        if(next.Length!=values.Length) { columns=hasGpu?3:2; values=next; Place(); Invalidate(); }
-        else for(int index=0;index<next.Length;index++) if(next[index]!=values[index]) { values[index]=next[index]; Invalidate(Cell(index)); }
-        string hint="CPU："+Format(reading.Cpu,"%")+"　内存："+Format(reading.Memory,"%")+"\nCPU："+Format(reading.CpuTemp,"°C")+"　硬盘："+Format(reading.DiskTemp,"°C")+"\n"+reading.CpuSensor+"\n"+reading.DiskSensor;
+        ApplyReadings(reading);
+        string hint="CPU："+Format(reading.Cpu,"%")+"　内存："+Format(reading.Memory,"%")+"\nCPU："+Format(reading.CpuTemp,"°C")+"\n"+reading.CpuSensor;
         if(hasGpu) hint+="\nGPU："+Format(reading.GpuTemp,"°C")+"　"+reading.GpuSensor;
+        if(reading.Disks.Length>0) hint+="\n"+DiskDisplay.Details(reading.Disks);
         if(!string.IsNullOrEmpty(reading.Error)) hint+="\n"+reading.Error;
         tooltip.SetToolTip(this,hint);
-        string trayText="黑皮win助手\nCPU "+Format(reading.Cpu,"%")+" RAM "+Format(reading.Memory,"%")+"\nCPU "+Format(reading.CpuTemp,"°C")+" SSD "+Format(reading.DiskTemp,"°C");
+        string trayText=dualDisk?"黑皮win助手\n硬盘1 "+DiskDisplay.Format(reading.Disks[0].Temperature)+" 硬盘2 "+DiskDisplay.Format(reading.Disks[1].Temperature)
+            :"黑皮win助手\nCPU "+Format(reading.Cpu,"%")+" RAM "+Format(reading.Memory,"%")+"\nCPU "+Format(reading.CpuTemp,"°C")+" SSD "+Format(reading.DiskTemp,"°C");
         if(hasGpu) trayText+=" GPU "+Format(reading.GpuTemp,"°C");
         tray.Text=trayText.Length>63?trayText.Substring(0,63):trayText;
         if(ticks==3) { SaveStatus(); if(Program.CapturePreview) using(Bitmap image=new Bitmap(Width,Height)) { DrawToBitmap(image,new Rectangle(0,0,Width,Height)); image.Save(Path.Combine(Program.Home,"widget-preview.png"),System.Drawing.Imaging.ImageFormat.Png); } }
     }
+    internal void ApplyReadings(Readings reading)
+    {
+        bool gpu=reading.Gpus.Length>0,dual=reading.Disks.Length>=2;
+        string[] next=dual
+            ? (gpu?new [] {Format(reading.Cpu,"%"),Format(reading.GpuLoad,"%"),Format(reading.Memory,"%"),DiskDisplay.Format(reading.Disks[0].Temperature),Format(reading.CpuTemp,"°C"),Format(reading.GpuTemp,"°C"),"",DiskDisplay.Format(reading.Disks[1].Temperature)}
+                  :new [] {Format(reading.Cpu,"%"),Format(reading.Memory,"%"),DiskDisplay.Format(reading.Disks[0].Temperature),Format(reading.CpuTemp,"°C"),"",DiskDisplay.Format(reading.Disks[1].Temperature)})
+            : (gpu?new [] {Format(reading.Cpu,"%"),Format(reading.GpuLoad,"%"),Format(reading.Memory,"%"),Format(reading.CpuTemp,"°C"),Format(reading.GpuTemp,"°C"),Format(reading.DiskTemp,"°C")}
+                  :new [] {Format(reading.Cpu,"%"),Format(reading.Memory,"%"),Format(reading.CpuTemp,"°C"),Format(reading.DiskTemp,"°C")});
+        string[] nextLabels=dual
+            ? (gpu?new [] {"CPU","GPU","内存","硬盘1","CPU","GPU","","硬盘2"}:new [] {"CPU","内存","硬盘1","CPU","","硬盘2"})
+            : (gpu?new [] {"CPU","GPU","内存","CPU","GPU","硬盘"}:new [] {"CPU","内存","CPU","硬盘"});
+        bool changed=dualDisk!=dual || !labels.SequenceEqual(nextLabels);
+        dualDisk=dual; labels=nextLabels; columns=next.Length/2;
+        if(changed) { values=next; Place(); Invalidate(); }
+        else for(int i=0;i<next.Length;i++) if(values[i]!=next[i]) { values[i]=next[i]; Invalidate(Cell(i)); }
+    }
     private Rectangle Cell(int index)
     {
         int col=index%columns,row=index/columns;
-        int x=columns==3?4+col*84:(col==0?4:96);
-        return new Rectangle((int)(x*scale),(int)(row*19*scale),(int)((columns==3?76:68)*scale),(int)(19*scale));
+        int x=columns==2? (col==0?4:96):4+col*84;
+        int width=dualDisk && col==columns-1?96:columns==2?68:76;
+        return new Rectangle((int)(x*scale),(int)(row*19*scale),(int)(width*scale),(int)(19*scale));
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e); if(labelFont==null) return;
         e.Graphics.TextRenderingHint=TextRenderingHint.AntiAliasGridFit;
-        string[] labels=columns==3?new [] {"CPU","GPU","内存","CPU","GPU","硬盘"}:new [] {"CPU","内存","CPU","硬盘"};
         using(Brush labelsBrush=new SolidBrush(labelColor)) using(Brush valuesBrush=new SolidBrush(valueColor))
         using(StringFormat left=new StringFormat(StringFormat.GenericTypographic))
         using(StringFormat valueFormat=new StringFormat(StringFormat.GenericTypographic))
@@ -387,7 +403,8 @@ internal sealed class MonitorForm : Form
             {
                 Rectangle cell=Cell(i);
                 // Keep each label/value pair tight and reserve the wider gap between columns.
-                RectangleF valueBounds=new RectangleF(cell.X+30*scale,cell.Y,(columns==3?46:38)*scale,cell.Height);
+                float labelWidth=(dualDisk && i%columns==columns-1?42:30)*scale;
+                RectangleF valueBounds=new RectangleF(cell.X+labelWidth,cell.Y,cell.Width-labelWidth,cell.Height);
                 e.Graphics.DrawString(labels[i],labelFont,labelsBrush,cell,left);
                 e.Graphics.DrawString(values[i],valueFont,valuesBrush,valueBounds,valueFormat);
             }
@@ -406,7 +423,7 @@ internal sealed class MonitorForm : Form
     {
         Readings r=sensors.Snapshot(); SaveStatus();
         using(Process p=Process.GetCurrentProcess())
-            MessageBox.Show("CPU 占用 "+Format(r.Cpu,"%")+"    内存占用 "+Format(r.Memory,"%")+"\nCPU 温度 "+Format(r.CpuTemp,"°C")+"    硬盘温度 "+Format(r.DiskTemp,"°C")+"\n\n"+r.CpuSensor+"\n"+r.DiskSensor+"\n\n"+r.GpuSensor+"\n"+string.Join("\n",r.Gpus.Select(g=>g.Name+" ["+g.Id+"]："+Format(g.Temperature,"°C")+" / "+Format(g.Load,"%")))+"\n\n占用率间隔："+settings.LoadIntervalMs+" ms\n温度间隔："+settings.TemperatureIntervalMs+" ms\n小组件工作集："+(p.WorkingSet64/1048576.0).ToString("F1")+" MiB\n\n"+r.Error,"任务栏监控",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            MessageBox.Show("CPU 占用 "+Format(r.Cpu,"%")+"    内存占用 "+Format(r.Memory,"%")+"\nCPU 温度 "+Format(r.CpuTemp,"°C")+"\n\n"+r.CpuSensor+"\n"+DiskDisplay.Details(r.Disks)+"\n\n"+r.GpuSensor+"\n"+string.Join("\n",r.Gpus.Select(g=>g.Name+" ["+g.Id+"]："+Format(g.Temperature,"°C")+" / "+Format(g.Load,"%")))+"\n\n占用率间隔："+settings.LoadIntervalMs+" ms\n温度间隔："+settings.TemperatureIntervalMs+" ms\n小组件工作集："+(p.WorkingSet64/1048576.0).ToString("F1")+" MiB\n\n"+r.Error,"任务栏监控",MessageBoxButtons.OK,MessageBoxIcon.Information);
     }
     protected override void Dispose(bool disposing)
     {

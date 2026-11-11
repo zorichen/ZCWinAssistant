@@ -102,6 +102,7 @@ internal static class MonitorChecks
                 {
                     Readings cached=(Readings)typeof(SensorService).GetField("readings",flags).GetValue(sensors);
                     cached.Gpus=new [] {nvidia};
+                    cached.Disks=new [] {new DiskReading {Id="/nvme/0",Name="First SSD",Temperature=40},new DiskReading {Id="/nvme/1",Name="Second SSD",Temperature=35}};
                     cached.GpuTemp=40; cached.GpuLoad=55; cached.CpuTemp=60; cached.DiskTemp=35;
                     cached.TemperatureAt=DateTime.UtcNow.AddMinutes(-1);
                     Readings stale=sensors.Snapshot();
@@ -109,6 +110,8 @@ internal static class MonitorChecks
                     Check(stale.Gpus[0].Temperature==null && stale.Gpus[0].Load==null,"Expired per-adapter readings must be unavailable.");
                     Check(cached.Gpus[0].Temperature==40,"Snapshot expiry must not mutate the sampling cache.");
                     Check(stale.CpuTemp==null && stale.DiskTemp==null,"Existing temperature expiry must still work.");
+                    Check(stale.Disks.Length==2 && stale.Disks.All(d=>d.Temperature==null),"Expiry clears both disk temperatures while retaining identities.");
+                    Check(cached.Disks[0].Temperature==40 && cached.Disks[1].Temperature==35,"Disk expiry must not mutate sampling cache.");
                     cached.TemperatureAt=DateTime.UtcNow;
                     Check(sensors.Snapshot().GpuTemp==40,"Fresh GPU readings remain available.");
                 }
@@ -117,20 +120,42 @@ internal static class MonitorChecks
                 Type type=typeof(MonitorForm);
                 var timer=(System.Windows.Forms.Timer)type.GetField("timer",flags).GetValue(form);
                 timer.Stop();
-                foreach(int columns in new [] {2,3})
+                foreach(bool gpu in new [] {false,true})
+                foreach(int diskCount in new [] {0,1,2,3})
                 foreach(float scale in new [] {1f,1.25f,1.5f,2.25f})
                 {
-                    type.GetField("columns",flags).SetValue(form,columns);
+                    var sample=new Readings {Cpu=100,Memory=100,CpuTemp=100,GpuLoad=100,GpuTemp=100,DiskTemp=100,
+                        Gpus=gpu?new [] {nvidia}:new GpuReading[0],
+                        Disks=Enumerable.Range(0,diskCount).Select(i=>new DiskReading {Id="/nvme/"+i,Name="SSD "+i,Temperature=i==0?(double?)100:null,Sensor="Composite"}).ToArray()};
+                    form.ApplyReadings(sample);
+                    int columns=(int)type.GetField("columns",flags).GetValue(form);
+                    string[] labels=(string[])type.GetField("labels",flags).GetValue(form);
+                    string[] values=(string[])type.GetField("values",flags).GetValue(form);
+                    Check(columns==(gpu?3:2)+(diskCount>=2?1:0),"Only dual-disk layouts add a column.");
+                    if(diskCount>=2) {
+                        Check(labels[columns-1]=="硬盘1" && labels[columns*2-1]=="硬盘2","Both disk labels displayed.");
+                        Check(values[columns-1]=="100°C" && values[columns*2-1]=="—","Missing second temperature must not reuse first temperature.");
+                    }
                     type.GetField("scale",flags).SetValue(form,scale);
-                    type.GetField("values",flags).SetValue(form,Enumerable.Repeat("100°C",columns*2).ToArray());
                     type.GetMethod("RebuildFonts",flags).Invoke(form,null);
-                    form.ClientSize=new Size((int)((columns==3?252:168)*scale),(int)(38*scale));
+                    int width=(int)type.GetProperty("WidgetWidth",flags).GetValue(form,null);
+                    form.ClientSize=new Size((int)(width*scale),(int)(38*scale));
                     for(int i=0;i<columns*2;i++)
                     {
                         Rectangle cell=(Rectangle)type.GetMethod("Cell",flags).Invoke(form,new object[] {i});
                         Check(form.ClientRectangle.Contains(cell),"Cell outside widget at "+scale);
+                        using(var graphics=form.CreateGraphics()) {
+                            var font=(Font)type.GetField("valueFont",flags).GetValue(form);
+                            float labelWidth=(diskCount>=2 && i%columns==columns-1?42:30)*scale;
+                            Check(graphics.MeasureString(labels[i],font,1000,StringFormat.GenericTypographic).Width<=labelWidth,"Label fits at "+scale);
+                            Check(graphics.MeasureString(values[i],font,1000,StringFormat.GenericTypographic).Width<=cell.Width-labelWidth,"Value fits at "+scale);
+                        }
                     }
-                    using(Bitmap bitmap=new Bitmap(form.Width,form.Height)) form.DrawToBitmap(bitmap,form.ClientRectangle);
+                    using(Bitmap bitmap=new Bitmap(form.Width,form.Height)) {
+                        form.DrawToBitmap(bitmap,form.ClientRectangle);
+                        if(diskCount==2 && scale==2.25f) bitmap.Save(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,gpu?"dual-disk-gpu.png":"dual-disk.png"));
+                    }
+                    Check(DiskDisplay.Details(sample.Disks).Split(new [] {'\n'},StringSplitOptions.RemoveEmptyEntries).Length==diskCount,"Details include every drive, including drives beyond two.");
                 }
                 var menu=(ContextMenuStrip)type.GetField("menu",flags).GetValue(form);
                 bool inputEnabled=true;
